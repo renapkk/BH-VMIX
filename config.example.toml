@@ -1,0 +1,71 @@
+# ssl_mixer の設定ファイル見本
+# このファイルを config.toml という名前でコピーして編集してください。
+# ch 番号はすべて Audio MIDI 設定の表示と同じ「1始まり」です。
+
+# 開く機器セット（Audio MIDI 設定で付けた名前と完全一致）
+device = "SSL12+BH"
+
+# 機器セットの中で「入力元」「出力先」になるデバイス名（ch 自動判定に使う）
+source_device = "SSL 12"
+sink_device = "BlackHole 2ch"
+
+# 希望のサンプルレート。機器セットが別のレートで動いていればそちらに合わせる
+samplerate = 48000
+
+# バッファサイズ（1回に処理するサンプル数。Pro Tools の H/W バッファサイズと同じ）
+# 小さいほど遅延が少なく、大きいほど安定する。音が途切れる場合は 512 に上げる
+blocksize = 256
+
+# "stereo" = パンを使って L/R に振る / "mono" = パンを無視して両chに同じ信号
+output_mode = "stereo"
+
+# マスターゲイン（dB）
+master_gain_db = 0.0
+
+# マスター段のセーフティリミッター（-1dBFS）
+limiter = true
+
+# デバイスが見つからないときに再接続を試みる間隔（秒）
+reconnect_interval = 3.0
+
+# 機器セット内の ch を手動で指定する場合だけ書く（省略時は自動判定）
+# input_channels = [1, 2, 3, 4]      # [[inputs]] と同じ数だけ並べる
+# output_channels = [17, 18]         # stereo は L, R の2つ。mono は1つでも可
+
+# In 1 と In 2 をステレオリンクする（In 1 = L、In 2 = R。操作は In 1 の設定で両方が動く）
+link_in_1_2 = true
+# リンク中のバランス。-1（左）〜 +1（右）
+link_balance = 0.0
+
+# 入力ごとの設定。上から順に input_channels（自動なら SSL 12 の入力1, 2, 3, …）に対応
+[[inputs]]
+name = "In 1"
+gain_db = 0.0
+pan = 0.0      # -1（左）〜 +1（右）
+mute = false
+limiter = false               # チャンネルの Limiter（Fader の前にかかる）
+limiter_threshold_db = -6.0   # Limiter のスレッショルド（-60〜0 dB）
+
+[[inputs]]
+name = "In 2"
+gain_db = 0.0
+pan = 0.0
+mute = false
+limiter = false               # チャンネルの Limiter（Fader の前にかかる）
+limiter_threshold_db = -6.0   # Limiter のスレッショルド（-60〜0 dB）
+
+[[inputs]]
+name = "In 3"
+gain_db = 0.0
+pan = 0.0
+mute = false
+limiter = false               # チャンネルの Limiter（Fader の前にかかる）
+limiter_threshold_db = -6.0   # Limiter のスレッショルド（-60〜0 dB）
+
+[[inputs]]
+name = "In 4"
+gain_db = 0.0
+pan = 0.0
+mute = false
+limiter = false               # チャンネルの Limiter（Fader の前にかかる）
+limiter_threshold_db = -6.0   # Limiter のスレッショルド（-60〜0 dB）

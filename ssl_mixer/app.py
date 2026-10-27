@@ -1,0 +1,330 @@
+"""メニューバー常駐アプリ（rumps 使用）。
+
+ミックス処理（Engine）は別スレッドで動かし、メニューの表示更新は1秒ごとのタイマーで
+メインスレッドから行う。画面（メニュー）を触ってよいのはメインスレッドだけなので、
+Engine からの知らせはリストに積んでおき、タイマーで取り出して表示する。
+設定ウィンドウ（window.py）は、このアプリの cfg を書き換えて settings_changed() を呼ぶ。
+"""
+
+from __future__ import annotations
+
+import argparse
+import logging
+import logging.handlers
+import subprocess
+import sys
+import threading
+import webbrowser
+
+import rumps
+
+from . import devices, login_item, paths, presets
+from .config import Config, ConfigError, load_config, save_config
+from .engine import MIC_PERMISSION_MESSAGE, OPEN_HANG_MESSAGE, Engine
+
+BLACKHOLE_URL = "https://existential.audio/blackhole/"
+STATE_MARKS = {"動作中": "●", "接続待ち": "…", "起動中": "…", "停止": "○"}
+MODE_LABELS = {"stereo": "Stereo", "mono": "Mono"}
+
+log = logging.getLogger("ssl_mixer")
+
+
+def _setup_logging() -> None:
+    paths.LOG_DIR.mkdir(parents=True, exist_ok=True)
+    handler = logging.handlers.RotatingFileHandler(
+        paths.LOG_PATH, maxBytes=1_000_000, backupCount=3, encoding="utf-8")
+    handler.setFormatter(logging.Formatter("%(asctime)s %(message)s", "%Y-%m-%d %H:%M:%S"))
+    log.addHandler(handler)
+    log.addHandler(logging.StreamHandler(sys.stderr))
+    log.setLevel(logging.INFO)
+
+
+def _short(text: str, limit: int = 48) -> str:
+    first = text.splitlines()[0] if text else ""
+    return first if len(first) <= limit else first[: limit - 1] + "…"
+
+
+class MixerApp(rumps.App):
+    def __init__(self, test_tone: bool = False, show_window: bool = True):
+        super().__init__(paths.APP_NAME, title="VMIX …", quit_button=None)
+        self.config_path = paths.ensure_app_config()
+        self.test_tone = test_tone
+        self.engine: Engine | None = None
+        self.thread: threading.Thread | None = None
+        self.window_ctl = None
+        self.last_message = ""
+        self._alerts: list[str] = []   # Engine のスレッドから積み、タイマーで表示する
+        self._dirty = False            # 設定ファイルへの保存待ち
+        self._mute_menu_key = None
+        self.cfg = self._load_config()
+
+        self.status_item = rumps.MenuItem("状態: 起動中")
+        self.message_item = rumps.MenuItem("")
+        self.toggle_item = rumps.MenuItem("停止", callback=self.on_toggle)
+        self.mute_menu = rumps.MenuItem("Mute")
+        self.mode_menu = rumps.MenuItem("Output")
+        for mode, label in MODE_LABELS.items():
+            self.mode_menu.add(rumps.MenuItem(label, callback=self._mode_callback(mode)))
+        self.tone_item = rumps.MenuItem("Test Tone（1kHz / -12 dBFS）", callback=self.on_test_tone)
+        self.login_item = rumps.MenuItem("ログイン時に起動", callback=self.on_login_item)
+        self.menu = [
+            rumps.MenuItem("設定ウィンドウを開く", callback=self.on_open_window),
+            None,
+            self.status_item,
+            self.message_item,
+            None,
+            self.toggle_item,
+            self.mute_menu,
+            self.mode_menu,
+            self.tone_item,
+            None,
+            rumps.MenuItem("機器セット「SSL12+BH」を作成", callback=self.on_create_aggregate),
+            rumps.MenuItem("BlackHole のダウンロードページを開く",
+                           callback=lambda _: webbrowser.open(BLACKHOLE_URL)),
+            None,
+            rumps.MenuItem("設定ファイルを開く", callback=self.on_open_config),
+            rumps.MenuItem("プリセットのフォルダを開く", callback=self.on_open_presets),
+            rumps.MenuItem("設定を再読み込み", callback=self.on_reload),
+            rumps.MenuItem("ログを開く", callback=self.on_open_log),
+            self.login_item,
+            None,
+            rumps.MenuItem("終了", callback=self.on_quit),
+        ]
+        self._refresh_menu()
+        self.timer = rumps.Timer(self.on_tick, 1)
+        self.timer.start()
+        self.start_engine()
+        if show_window:
+            # 起動直後はアプリの準備が終わってから開く
+            rumps.Timer(self._open_window_once, 0.3).start()
+
+    # ---- 設定 ----
+
+    def _load_config(self) -> Config:
+        try:
+            cfg, _ = load_config(self.config_path)
+            return cfg
+        except ConfigError as e:
+            self._notify(f"設定ファイルにエラーがあるため、既定値で動きます。\n{e}")
+            return Config()
+
+    def settings_changed(self) -> None:
+        """設定ウィンドウやメニューで値が変わったとき：すぐ音に反映し、保存を予約する。"""
+        if self.engine is not None:
+            self.engine.cfg = self.cfg
+            self.engine.apply_settings()
+        self._dirty = True
+        self._refresh_menu()
+
+    def _save_if_dirty(self) -> None:
+        if not self._dirty:
+            return
+        self._dirty = False
+        try:
+            save_config(self.cfg, self.config_path)
+        except OSError as e:
+            log.info(f"設定を保存できませんでした: {e}")
+
+    def _refresh_menu(self) -> None:
+        """メニューのチェック状態を設定に合わせる。"""
+        cfg = self.cfg
+        # リンク中は In 1-2 を1つの項目にまとめる（構成が変わったときだけ作り直す）
+        key = (cfg.is_linked, tuple(i.name for i in cfg.inputs))
+        if key != self._mute_menu_key:
+            self._mute_menu_key = key
+            if self.mute_menu._menu is not None:
+                self.mute_menu.clear()
+            for i, inp in enumerate(cfg.inputs):
+                if cfg.is_linked and i == 1:
+                    continue
+                title = f"{inp.name} / {cfg.inputs[1].name}（Link）" if cfg.is_linked and i == 0 else inp.name
+                self.mute_menu.add(rumps.MenuItem(title, callback=self._mute_callback(i)))
+        for item, i in zip(self.mute_menu.values(),
+                           [i for i in range(len(cfg.inputs)) if not (cfg.is_linked and i == 1)]):
+            item.state = cfg.inputs[i].mute
+        for mode, label in MODE_LABELS.items():
+            self.mode_menu[label].state = cfg.output_mode == mode
+        self.tone_item.state = self.test_tone
+        self.login_item.state = login_item.is_installed()
+
+    # ---- エンジンの開始・停止 ----
+
+    def start_engine(self) -> None:
+        if self.thread is not None and self.thread.is_alive():
+            return
+        self.engine = Engine(self.cfg, test_tone=self.test_tone, log=self._on_engine_log)
+        self.thread = threading.Thread(target=self.engine.run, daemon=True)
+        self.thread.start()
+        self.toggle_item.title = "停止"
+
+    def stop_engine(self) -> None:
+        if self.engine is not None:
+            self.engine.stop()
+        if self.thread is not None:
+            self.thread.join(timeout=5)
+        self.thread = None
+        self.toggle_item.title = "開始"
+
+    def restart_engine(self) -> None:
+        self.stop_engine()
+        self.start_engine()
+
+    def set_test_tone(self, on: bool) -> None:
+        self.test_tone = on
+        self._refresh_menu()
+        if self.window_ctl is not None:
+            self.window_ctl.sync_from_config()
+        self.restart_engine()
+
+    def _on_engine_log(self, message: str) -> None:
+        # Engine のスレッドから呼ばれる。画面は触らず、記録と通知の予約だけする
+        log.info(message)
+        self.last_message = message
+        if message in (MIC_PERMISSION_MESSAGE, OPEN_HANG_MESSAGE):
+            self._alerts.append(message)
+
+    def _notify(self, message: str) -> None:
+        log.info(message)
+        self._alerts.append(message)
+
+    # ---- 設定ウィンドウ ----
+
+    def _open_window_once(self, timer) -> None:
+        timer.stop()
+        self.on_open_window(None)
+
+    def on_open_window(self, _) -> None:
+        if self.window_ctl is None:
+            from .window import MixerWindowController
+            self.window_ctl = MixerWindowController.alloc().initWithHost_(self)
+        self.window_ctl.show()
+
+    def rebuild_window(self) -> None:
+        """設定ウィンドウを作り直す（入力の数が変わったときなど）。"""
+        reopen = self.window_ctl is not None and self.window_ctl.window.isVisible()
+        if self.window_ctl is not None:
+            self.window_ctl.window.close()
+            self.window_ctl = None
+        if reopen:
+            self.on_open_window(None)
+
+    def _sync_window(self) -> None:
+        if self.window_ctl is not None:
+            self.window_ctl.sync_from_config()
+
+    # ---- メニューの操作 ----
+
+    def on_tick(self, _) -> None:
+        state = self.engine.state if self.engine and self.thread and self.thread.is_alive() else "停止"
+        self.title = f"VMIX {STATE_MARKS.get(state, '')}"
+        label = "Test Tone" if self.test_tone and state == "動作中" else state
+        self.status_item.title = f"状態: {label}"
+        self.message_item.title = _short(self.last_message)
+        self._save_if_dirty()
+        while self._alerts:
+            rumps.alert(title=paths.APP_NAME, message=self._alerts.pop(0))
+
+    def on_toggle(self, _) -> None:
+        if self.thread is not None and self.thread.is_alive():
+            self.stop_engine()
+        else:
+            self.start_engine()
+
+    def _mute_callback(self, index: int):
+        def callback(sender):
+            self.cfg.inputs[index].mute = not self.cfg.inputs[index].mute
+            self.settings_changed()
+            self._sync_window()
+        return callback
+
+    def _mode_callback(self, mode: str):
+        def callback(_):
+            self.cfg.output_mode = mode
+            self.settings_changed()
+            self._sync_window()
+        return callback
+
+    def on_test_tone(self, _) -> None:
+        self.set_test_tone(not self.test_tone)
+
+    def create_aggregate(self) -> None:
+        self.on_create_aggregate(None)
+
+    def on_create_aggregate(self, _) -> None:
+        try:
+            dev = devices.create_aggregate_for(self.cfg)
+        except (devices.DeviceError, RuntimeError) as e:
+            rumps.alert(title=paths.APP_NAME, message=f"機器セットを作れませんでした。\n{e}")
+            return
+        log.info(f"機器セット「{dev.name}」を作成しました")
+        rumps.alert(title=paths.APP_NAME,
+                    message=f"機器セット「{dev.name}」を作成しました。\n"
+                            f"クロックソース: {self.cfg.source_device}\n"
+                            f"ドリフト補正: {self.cfg.sink_device} で ON")
+        self.restart_engine()
+
+    def on_open_config(self, _) -> None:
+        self._save_if_dirty()
+        # テキストエディットで開く
+        subprocess.run(["/usr/bin/open", "-t", str(self.config_path)])
+
+    def on_open_presets(self, _) -> None:
+        # いらないプリセットは、このフォルダでファイルを消せば一覧から消える
+        presets.PRESET_DIR.mkdir(parents=True, exist_ok=True)
+        subprocess.run(["/usr/bin/open", str(presets.PRESET_DIR)])
+
+    def on_reload(self, _) -> None:
+        self.cfg = self._load_config()
+        self._dirty = False
+        self._refresh_menu()
+        # 入力の数が変わることもあるので、ウィンドウは作り直す
+        self.restart_engine()
+        self.rebuild_window()
+
+    def on_open_log(self, _) -> None:
+        subprocess.run(["/usr/bin/open", "-a", "Console", str(paths.LOG_PATH)])
+
+    def on_login_item(self, _) -> None:
+        if login_item.is_installed():
+            login_item.uninstall()
+        else:
+            app = paths.app_bundle_path()
+            if app is None:
+                rumps.alert(title=paths.APP_NAME,
+                            message="ログイン時の起動は、アプリ版（BH VMIX.app）から設定してください。")
+                return
+            login_item.install(app)
+        self._refresh_menu()
+
+    def on_quit(self, _) -> None:
+        self._save_if_dirty()
+        self.stop_engine()
+        rumps.quit_application()
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(prog=paths.APP_NAME)
+    parser.add_argument("--test-tone", action="store_true", help="テストトーンで起動する")
+    parser.add_argument("--hidden", action="store_true", help="設定ウィンドウを開かずに起動する（ログイン時用）")
+    parser.add_argument("--install-login-item", action="store_true", help="ログイン時の起動を登録して終了")
+    parser.add_argument("--uninstall-login-item", action="store_true", help="ログイン時の起動を解除して終了")
+    # Finder から起動されたときに macOS が付ける引数などは無視する
+    args, _ = parser.parse_known_args(argv)
+
+    if args.install_login_item:
+        app = paths.app_bundle_path()
+        if app is None:
+            print("BH VMIX.app の中から実行してください", file=sys.stderr)
+            return 1
+        login_item.install(app)
+        print(f"登録しました: {login_item.PLIST_PATH}")
+        return 0
+    if args.uninstall_login_item:
+        login_item.uninstall()
+        print("解除しました")
+        return 0
+
+    _setup_logging()
+    log.info(f"{paths.APP_NAME} を起動します（設定: {paths.APP_CONFIG_PATH}）")
+    MixerApp(test_tone=args.test_tone, show_window=not args.hidden).run()
+    return 0

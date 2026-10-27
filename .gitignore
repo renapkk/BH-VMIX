@@ -1,0 +1,15 @@
+# Python の環境とキャッシュ
+.venv/
+__pycache__/
+*.pyc
+
+# ビルド結果（配布用の zip は GitHub の Releases に置く）
+build/
+dist/
+
+# 個人の設定ファイル（見本は config.example.toml）
+config.toml
+*.toml.tmp
+
+# macOS が作るファイル
+.DS_Store

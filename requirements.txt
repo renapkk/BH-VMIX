@@ -1,0 +1,6 @@
+# 依存パッケージ（.venv/bin/pip install -r requirements.txt で入れる）
+sounddevice>=0.5
+numpy>=2.0
+# メニューバーアプリと .app 化に使う
+rumps>=0.4
+py2app>=0.28
