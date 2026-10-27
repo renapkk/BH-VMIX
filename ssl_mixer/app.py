@@ -16,7 +16,11 @@ import sys
 import threading
 import webbrowser
 
+import objc
 import rumps
+import rumps.rumps
+from AppKit import (NSApplication, NSApplicationActivationPolicyRegular, NSMenu, NSMenuItem)
+from Foundation import NSObject
 
 from . import devices, login_item, paths, presets
 from .config import Config, ConfigError, load_config, save_config
@@ -42,6 +46,69 @@ def _setup_logging() -> None:
 def _short(text: str, limit: int = 48) -> str:
     first = text.splitlines()[0] if text else ""
     return first if len(first) <= limit else first[: limit - 1] + "…"
+
+
+# 起動中の MixerApp（Dock のクリックなど、macOS からの知らせを渡すため）
+_current_app: "MixerApp | None" = None
+
+
+class VmixAppDelegate(rumps.rumps.NSApp):
+    """rumps が使うアプリの窓口（デリゲート）を拡張したもの。
+
+    - Dock のアイコンや、起動中にもう一度アプリを開いたとき → 設定ウィンドウを開く
+    - アプリが終了するとき（⌘Q や Dock の「終了」でも）→ 設定を保存して音を止める
+    """
+
+    def applicationShouldHandleReopen_hasVisibleWindows_(self, application, has_visible):
+        if _current_app is not None:
+            _current_app.on_open_window(None)
+        return True
+
+    def applicationWillTerminate_(self, notification):
+        if _current_app is not None:
+            _current_app.shutdown()
+        objc.super(VmixAppDelegate, self).applicationWillTerminate_(notification)
+
+
+# rumps が起動時に作るデリゲートを、上の拡張版に差し替える
+rumps.rumps.NSApp = VmixAppDelegate
+
+
+class MenuTarget(NSObject):
+    """画面上部のアプリのメニューから呼ばれる処理。"""
+
+    def openSettings_(self, sender):
+        if _current_app is not None:
+            _current_app.on_open_window(None)
+
+
+def _build_main_menu(target: MenuTarget) -> NSMenu:
+    """画面上部に出る「BH VMIX」と「ウィンドウ」のメニューを作る。"""
+    def item(title, action, key="", tgt=None):
+        menu_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(title, action, key)
+        if tgt is not None:
+            menu_item.setTarget_(tgt)
+        return menu_item
+
+    main = NSMenu.alloc().init()
+    app_menu = NSMenu.alloc().initWithTitle_(paths.APP_NAME)
+    app_menu.addItem_(item("設定ウィンドウを開く", "openSettings:", ",", target))
+    app_menu.addItem_(NSMenuItem.separatorItem())
+    app_menu.addItem_(item(f"{paths.APP_NAME} を隠す", "hide:", "h"))
+    app_menu.addItem_(NSMenuItem.separatorItem())
+    app_menu.addItem_(item(f"{paths.APP_NAME} を終了", "terminate:", "q"))
+    app_item = NSMenuItem.alloc().init()
+    app_item.setSubmenu_(app_menu)
+    main.addItem_(app_item)
+
+    window_menu = NSMenu.alloc().initWithTitle_("ウィンドウ")
+    window_menu.addItem_(item("しまう", "performMiniaturize:", "m"))
+    window_menu.addItem_(item("閉じる", "performClose:", "w"))
+    window_item = NSMenuItem.alloc().init()
+    window_item.setSubmenu_(window_menu)
+    main.addItem_(window_item)
+    NSApplication.sharedApplication().setWindowsMenu_(window_menu)
+    return main
 
 
 class MixerApp(rumps.App):
@@ -91,6 +158,13 @@ class MixerApp(rumps.App):
             rumps.MenuItem("終了", callback=self.on_quit),
         ]
         self._refresh_menu()
+        # Dock と ⌘Tab に出る、ふつうのアプリとして動かす（メニューバーのアイコンも残す）
+        global _current_app
+        _current_app = self
+        nsapp = NSApplication.sharedApplication()
+        nsapp.setActivationPolicy_(NSApplicationActivationPolicyRegular)
+        self._menu_target = MenuTarget.alloc().init()
+        nsapp.setMainMenu_(_build_main_menu(self._menu_target))
         self.timer = rumps.Timer(self.on_tick, 1)
         self.timer.start()
         self.start_engine()
@@ -297,9 +371,13 @@ class MixerApp(rumps.App):
         self._refresh_menu()
 
     def on_quit(self, _) -> None:
+        # 実際の後片付けは、終了の直前に shutdown() で行う（⌘Q や Dock の「終了」と同じ流れ）
+        rumps.quit_application()
+
+    def shutdown(self) -> None:
+        """終了の直前に呼ばれる：設定を保存して音を止める。"""
         self._save_if_dirty()
         self.stop_engine()
-        rumps.quit_application()
 
 
 def main(argv: list[str] | None = None) -> int:
