@@ -882,9 +882,15 @@ class MixerWindowController(NSObject):
         state = engine.state if engine is not None else "停止"
         if state == "動作中" and self.host.test_tone:
             state = "Test Tone"
+        missing = getattr(self.host, "source_missing", False)
+        if missing:
+            state = f"{self.host.cfg.source_device} なし"
         self.status_pill.setText_(f"● {state}")
         routing = engine.routing if engine is not None and state != "接続待ち" else None
-        if routing is not None:
+        if missing:
+            self.device_label.setStringValue_(
+                "USB・電源を確認してください")
+        elif routing is not None:
             self.device_label.setStringValue_(
                 f"{routing.device_name} · {routing.samplerate / 1000:g} kHz")
         else:

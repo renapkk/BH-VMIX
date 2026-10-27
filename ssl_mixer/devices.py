@@ -192,6 +192,13 @@ def print_device_list(cfg: Config) -> None:
         print("  ✓ クロックソース／ドリフト補正の設定は推奨どおりです")
 
 
+def source_present(cfg: Config) -> bool:
+    """入力元（SSL 12）が Mac につながっていて使えるか。"""
+    physical = [d for d in coreaudio.list_devices() if not d.is_aggregate]
+    index = _match_subdevice(physical, cfg.source_device)
+    return index is not None and coreaudio.is_alive(physical[index].id)
+
+
 def create_aggregate_for(cfg: Config, name: str | None = None) -> coreaudio.CADevice:
     """設定に合わせた機器セット（既定は「SSL12+BH」）を作る。
 

@@ -26,9 +26,10 @@ SILENCE_WARN_SEC = 3.0
 OPEN_TIMEOUT_SEC = 5.0
 
 OPEN_HANG_MESSAGE = (
-    "ストリームを開く処理が応答しません。Core Audio（coreaudiod）が固まっている可能性があります。\n"
-    "  afplay など他のアプリでも音が出ない場合は、Mac を再起動するか、"
-    "ターミナルで sudo killall coreaudiod を実行してください。"
+    "オーディオの準備が終わりません。\n"
+    "  マイクへのアクセスを求める画面が出ていたら「許可」を押してください（許可すると自動で始まります）。\n"
+    "  それでも始まらず、afplay など他のアプリでも音が出ない場合は Core Audio（coreaudiod）が"
+    "固まっている可能性があります。Mac を再起動するか、ターミナルで sudo killall coreaudiod を実行してください。"
 )
 
 MIC_PERMISSION_MESSAGE = (
@@ -50,6 +51,9 @@ class Engine:
         self.state = "起動中"
         self._stop = threading.Event()
         self._last_message = ""
+        # 入力元（SSL 12）が見つからない状態か。Core Audio への問い合わせはこのスレッドで行い、
+        # 画面側（メインスレッド）はこの値を読むだけにする（Core Audio が応答しないと画面ごと止まるため）
+        self.source_missing = False
 
     # ---- 外部から操作するためのメソッド（フェーズ2のメニューバーからも使う） ----
 
@@ -88,6 +92,12 @@ class Engine:
         mixer.channel_limiter.set_settings(self.cfg.inputs, self.cfg.is_linked)
         mixer.limiter_enabled = self.cfg.limiter
 
+    def _source_present(self) -> bool:
+        try:
+            return devices.source_present(self.cfg)
+        except Exception:   # 問い合わせに失敗したときは「ある」とみなして、警告を出さない
+            return True
+
     def _log_once(self, message: str) -> None:
         """同じメッセージが続くときは1回だけ表示する（再試行のたびに出さない）。"""
         if message != self._last_message:
@@ -102,6 +112,7 @@ class Engine:
             try:
                 routing = devices.resolve_routing(self.cfg)
             except (DeviceError, sd.PortAudioError) as e:
+                self.source_missing = not self._source_present()
                 self.state = "接続待ち"
                 self._log_once(f"{e}。{self.cfg.reconnect_interval:g}秒おきに再接続を試みます…")
                 self._stop.wait(self.cfg.reconnect_interval)
@@ -162,6 +173,7 @@ class Engine:
         try:
             stream.start()
             self.state = "動作中"
+            self.source_missing = False
             mode = "テストトーン" if self.test_tone else cfg.output_mode
             self._last_message = ""
             self.log(

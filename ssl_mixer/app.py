@@ -123,6 +123,8 @@ class MixerApp(rumps.App):
         self._alerts: list[str] = []   # Engine のスレッドから積み、タイマーで表示する
         self._dirty = False            # 設定ファイルへの保存待ち
         self._mute_menu_key = None
+        self.source_missing = False     # SSL 12 が見つからない状態か（設定ウィンドウの表示にも使う）
+        self._source_alerted = False    # 見つからなくなってから、もうアラートを出したか
         self.cfg = self._load_config()
 
         self.status_item = rumps.MenuItem("状態: 起動中")
@@ -295,8 +297,29 @@ class MixerApp(rumps.App):
         self.status_item.title = f"状態: {label}"
         self.message_item.title = _short(self.last_message)
         self._save_if_dirty()
+        self._check_source()
         while self._alerts:
             rumps.alert(title=paths.APP_NAME, message=self._alerts.pop(0))
+
+    def _check_source(self) -> None:
+        """SSL 12 が見つからなくなったら、1回だけアラートを出す。
+
+        抜けている間は何度も出さない。つながったら印を戻し、次に抜けたらまた出す。
+        """
+        # 判定は Engine のスレッドで行っている（ここで Core Audio に問い合わせると、画面ごと止まることがある）
+        engine = self.engine
+        present = not (engine is not None and engine.source_missing)
+        self.source_missing = not present
+        if present:
+            if self._source_alerted:
+                log.info(f"{self.cfg.source_device} が認識されました")
+            self._source_alerted = False
+        elif not self._source_alerted:
+            self._source_alerted = True
+            message = (f"{self.cfg.source_device} が認識されません。\n"
+                       "USB ケーブルと電源を確認してください。つながると自動で再開します。")
+            log.info(message.replace("\n", " "))
+            self._alerts.append(message)
 
     def on_toggle(self, _) -> None:
         if self.thread is not None and self.thread.is_alive():
