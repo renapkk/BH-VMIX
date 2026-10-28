@@ -126,6 +126,7 @@ class MixerApp(rumps.App):
         self._mute_menu_key = None
         self.source_missing = False     # SSL 12 が見つからない状態か（設定ウィンドウの表示にも使う）
         self._source_alerted = False    # 見つからなくなってから、もうアラートを出したか
+        self._blink = False             # メニューバーの点滅用
         self.cfg = self._load_config()
 
         self.status_item = rumps.MenuItem("状態: 起動中")
@@ -297,14 +298,20 @@ class MixerApp(rumps.App):
 
     def on_tick(self, _) -> None:
         state = self.engine.state if self.engine and self.thread and self.thread.is_alive() else "停止"
-        self.title = f"VMIX {STATE_MARKS.get(state, '')}"
-        label = state
-        if self.test_tone and state == "動作中":
-            label = "L/R Test" if self.test_tone == TONE_LR else "Test Tone"
+        self._check_source()
+        if self.source_missing:
+            # インターフェースが外れているときは、メニューバーの印を点滅させて目立たせる
+            self._blink = not self._blink
+            self.title = "VMIX ⚠" if self._blink else "VMIX   "
+            label = "インターフェース未接続"
+        else:
+            self.title = f"VMIX {STATE_MARKS.get(state, '')}"
+            label = "接続中" if state == "動作中" else state
+            if self.test_tone and state == "動作中":
+                label += " · " + ("L/R Test" if self.test_tone == TONE_LR else "Test Tone")
         self.status_item.title = f"状態: {label}"
         self.message_item.title = _short(self.last_message)
         self._save_if_dirty()
-        self._check_source()
         while self._alerts:
             rumps.alert(title=paths.APP_NAME, message=self._alerts.pop(0))
 
@@ -319,11 +326,11 @@ class MixerApp(rumps.App):
         self.source_missing = not present
         if present:
             if self._source_alerted:
-                log.info(f"{self.cfg.source_device} が認識されました")
+                log.info(f"オーディオインターフェース（{self.cfg.source_device}）が接続されました")
             self._source_alerted = False
         elif not self._source_alerted:
             self._source_alerted = True
-            message = (f"{self.cfg.source_device} が認識されません。\n"
+            message = (f"オーディオインターフェース（{self.cfg.source_device}）が接続されていません。\n"
                        "USB ケーブルと電源を確認してください。つながると自動で再開します。")
             log.info(message.replace("\n", " "))
             self._alerts.append(message)

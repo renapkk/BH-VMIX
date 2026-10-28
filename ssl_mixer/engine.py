@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import gc
+import sys
 import threading
 import time
 from typing import Callable
@@ -14,6 +15,8 @@ from .config import Config, InputConfig
 from .devices import DeviceError, Routing
 from .dsp import TONE_BOTH, TONE_LR, Mixer, build_mix_matrix, tone_mode
 
+# Python の処理を切り替える間隔（秒）。既定の 5ms から縮めて、音の処理が待たされにくくする
+GIL_SWITCH_SEC = 0.001
 # ストリーム監視の間隔（秒）
 POLL_SEC = 0.5
 # 機器セットの構成を確かめる間隔（秒）
@@ -106,6 +109,10 @@ class Engine:
 
     def run(self) -> None:
         """停止されるまで「接続→動作→切断されたら待って再接続」を繰り返す。"""
+        # Python は一度に1つの処理しか Python のコードを動かせない（GIL）。画面の処理が動いている間、
+        # 音の処理は順番待ちになり、その待ちの上限は既定で 5ms。バッファサイズ 128（約 2.7ms）でも
+        # 間に合うよう、順番を譲り合う間隔を 1ms に縮める
+        sys.setswitchinterval(GIL_SWITCH_SEC)
         while not self._stop.is_set():
             # 起動前に機器セットが作られた場合などに備えて、毎回デバイス一覧を取り直す
             devices.refresh_portaudio()

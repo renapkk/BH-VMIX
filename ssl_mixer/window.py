@@ -48,7 +48,7 @@ WHITE = NSColor.whiteColor()
 PAD = 16
 TOP_H = 46
 FOOT_H = 52
-INFO_H = 32        # 通話アプリの設定を案内する帯
+INFO_H = 52        # 通話アプリの設定を案内する帯
 PRESET_H = 46      # プリセットの帯
 PRESET_POPUP_W = 260
 LABEL_W = 60
@@ -150,26 +150,73 @@ class DotView(NSView):
         NSBezierPath.bezierPathWithOvalInRect_(self.bounds()).fill()
 
 
+# 状態表示の色（ライト用の文字色, ダーク用の文字色）
+STATUS_COLORS = {
+    "ok": ("#3B6D11", "#97C459"),       # 接続中：緑
+    "alert": ("#A01E23", "#F09595"),    # インターフェース未接続：赤（点滅）
+    "wait": ("#854F0B", "#EF9F27"),     # 接続待ち：黄
+    "idle": ("#5F5E5A", "#B4B2A9"),     # 起動中・停止：灰
+}
+BLINK_SEC = 0.5
+
+
 class StatusPillView(NSView):
-    """「● 動作中」などの状態表示（薄い赤の背景に赤い文字）。"""
+    """「● 接続中」などの状態表示。状態ごとに色を変え、未接続のときは点滅させる。"""
 
     def initWithFrame_(self, frame):
         self = objc.super(StatusPillView, self).initWithFrame_(frame)
         if self is None:
             return None
         self.text = "● 起動中"
+        self.kind = "idle"
+        self.lit = True          # 点滅中の「強く光っている」側か
         return self
 
-    def setText_(self, text):
-        if text != self.text:
+    def setText_kind_(self, text, kind):
+        if text != self.text or kind != self.kind:
             self.text = text
+            self.kind = kind
+            self.lit = True
+            # 文字の長さに合わせて幅を変える
+            attrs = {NSFontAttributeName: NSFont.boldSystemFontOfSize_(12)}
+            width = NSString.stringWithString_(text).sizeWithAttributes_(attrs).width + 24
+            self.setFrameSize_((width, self.frame().size.height))
+            self.setNeedsDisplay_(True)
+
+    def blink(self):
+        """未接続のときだけ、強い赤と薄い赤を交互に切り替える。"""
+        if self.kind == "alert":
+            self.lit = not self.lit
             self.setNeedsDisplay_(True)
 
     def drawRect_(self, rect):
-        alpha = 0.16 if _is_dark(self) else 0.10
-        _rgb("#E24B4A" if _is_dark(self) else "#A01E23", alpha).setFill()
-        NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(self.bounds(), 6, 6).fill()
-        _draw_text(self.text, self.bounds(), NSFont.systemFontOfSize_(12), _accent_text(self))
+        dark = _is_dark(self)
+        color = _rgb(STATUS_COLORS[self.kind][1 if dark else 0])
+        path = NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(self.bounds(), 6, 6)
+        if self.kind == "alert" and self.lit:
+            # 点滅の「強い」側：赤で塗りつぶして白い文字
+            ACCENT.setFill()
+            path.fill()
+            text_color = WHITE
+        else:
+            color.colorWithAlphaComponent_(0.18 if dark else 0.13).setFill()
+            path.fill()
+            text_color = color
+        _draw_text(self.text, self.bounds(), NSFont.boldSystemFontOfSize_(12), text_color)
+
+
+class InfoCardView(NSView):
+    """通話アプリの設定を目立たせるための、薄い赤の枠付きカード。"""
+
+    def drawRect_(self, rect):
+        dark = _is_dark(self)
+        inner = NSMakeRect(0.5, 0.5, self.bounds().size.width - 1, self.bounds().size.height - 1)
+        path = NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(inner, 8, 8)
+        _rgb("#E24B4A" if dark else "#A01E23", 0.14 if dark else 0.07).setFill()
+        path.fill()
+        _rgb("#E24B4A" if dark else "#A01E23", 0.55 if dark else 0.45).setStroke()
+        path.setLineWidth_(1.0)
+        path.stroke()
 
 
 class ToggleButton(NSView):
@@ -337,6 +384,7 @@ class MixerWindowController(NSObject):
         self.master = {}
         self.display_db = {}
         self.last_tick = time.monotonic()
+        self.last_blink = self.last_tick
         self._build()
         return self
 
@@ -376,9 +424,9 @@ class MixerWindowController(NSObject):
                            secondary=False, align=NSTextAlignmentLeft)
         self.root.addSubview_(self.logo)
         self._update_logo()
-        self.status_pill = StatusPillView.alloc().initWithFrame_(NSMakeRect(PAD + 98, y + 2, 92, 22))
+        self.status_pill = StatusPillView.alloc().initWithFrame_(NSMakeRect(PAD + 98, y + 2, 80, 22))
         self.root.addSubview_(self.status_pill)
-        self.device_label = _label("", NSMakeRect(PAD + 198, y + 5, 170, 16), align=NSTextAlignmentLeft)
+        self.device_label = _label("", NSMakeRect(PAD + 186, y + 5, 150, 16), align=NSTextAlignmentLeft)
         self.root.addSubview_(self.device_label)
 
         # 右側: Output と Buffer Size
@@ -423,7 +471,7 @@ class MixerWindowController(NSObject):
             if title == "Load":
                 self.load_button = button
             x += BTN_W + 8
-        self.root.addSubview_(_label("名前の先頭に日付と時刻が入ります",
+        self.root.addSubview_(_label("変更は自動で保存されます",
                                      NSMakeRect(x + 4, y + 5, width - PAD - x - 4, 16),
                                      align=NSTextAlignmentRight))
         self._refresh_presets()
@@ -500,17 +548,23 @@ class MixerWindowController(NSObject):
 
     @objc.python_method
     def _build_info(self, width, height):
-        """通話アプリ（Discord・Zoom など）で選ぶデバイスの案内。"""
-        y = height - FOOT_H - INFO_H + (INFO_H - 16) / 2
+        """通話アプリ（Discord・Zoom など）で選ぶデバイスの案内。目立つようにカードで表示する。"""
+        top = height - FOOT_H - INFO_H
+        card = InfoCardView.alloc().initWithFrame_(NSMakeRect(PAD, top + 8, width - PAD * 2, INFO_H - 14))
+        self.root.addSubview_(card)
         cfg = self.host.cfg
-        self.root.addSubview_(_label("通話アプリの設定", NSMakeRect(PAD, y, 100, 16),
-                                     align=NSTextAlignmentLeft))
-        text = f"IN（マイク）= {cfg.sink_device}　　OUT（スピーカー）= {cfg.source_device}"
-        self.root.addSubview_(_label(text, NSMakeRect(PAD + 104, y, 400, 16),
+        y = top + 8 + (INFO_H - 14 - 20) / 2
+        self.root.addSubview_(_label("通話アプリ（Zoom・Discord）の設定", NSMakeRect(PAD + 14, y + 2, 210, 16),
                                      size=12, bold=True, secondary=False, align=NSTextAlignmentLeft))
-        self.root.addSubview_(_label("設定は自動で保存されます",
-                                     NSMakeRect(width - PAD - 180, y, 180, 16),
-                                     align=NSTextAlignmentRight))
+        self.info_devices = []
+        x = PAD + 232
+        for role, device in (("マイク（IN）", cfg.sink_device), ("スピーカー（OUT）", cfg.source_device)):
+            self.root.addSubview_(_label(role, NSMakeRect(x, y + 3, 104, 16), align=NSTextAlignmentLeft))
+            name = _label(device, NSMakeRect(x + 104, y, 120, 20), size=15, bold=True,
+                          secondary=False, align=NSTextAlignmentLeft)
+            self.root.addSubview_(name)
+            self.info_devices.append(name)
+            x += 232
 
     @objc.python_method
     def _build_footer(self, width, height):
@@ -836,6 +890,9 @@ class MixerWindowController(NSObject):
             return
         now = time.monotonic()
         dt, self.last_tick = now - self.last_tick, now
+        if now - self.last_blink >= BLINK_SEC:
+            self.last_blink = now
+            self.status_pill.blink()
         self._update_status()
         engine = self.host.engine
         mixer = engine.mixer if engine is not None else None
@@ -881,27 +938,33 @@ class MixerWindowController(NSObject):
     @objc.python_method
     def _update_status(self):
         self._update_logo()
+        for name in self.info_devices:
+            name.setTextColor_(_accent_text(self.root))
         # 「In 1-2 · Linked」はアクセントの赤で表示（ライト/ダークの切り替えに追従する）
         for strip in self.strips:
             if strip["linked"]:
                 strip["sub"].setTextColor_(_accent_text(self.root))
         engine = self.host.engine
         state = engine.state if engine is not None else "停止"
-        if state == "動作中" and self.host.test_tone:
-            state = "L/R Test" if self.host.test_tone == TONE_LR else "Test Tone"
         missing = getattr(self.host, "source_missing", False)
+        routing = engine.routing if engine is not None and state == "動作中" else None
         if missing:
-            state = f"{self.host.cfg.source_device} なし"
-        self.status_pill.setText_(f"● {state}")
-        routing = engine.routing if engine is not None and state != "接続待ち" else None
-        if missing:
-            self.device_label.setStringValue_(
-                "USB・電源を確認")
-        elif routing is not None:
-            self.device_label.setStringValue_(
-                f"{routing.device_name} · {routing.samplerate / 1000:g} kHz")
+            text, kind, detail = "● インターフェース未接続", "alert", ""
+        elif state == "動作中":
+            text, kind = "● 接続中", "ok"
+            if self.host.test_tone:
+                text += " · " + ("L/R Test" if self.host.test_tone == TONE_LR else "Test Tone")
+            detail = f"{routing.device_name} · {routing.samplerate / 1000:g} kHz" if routing else ""
+        elif state == "接続待ち":
+            text, kind, detail = "● 接続待ち", "wait", self.host.cfg.device
         else:
-            self.device_label.setStringValue_(self.host.cfg.device)
+            text, kind, detail = f"● {state}", "idle", ""
+        self.status_pill.setText_kind_(text, kind)
+        self.device_label.setStringValue_(detail)
+        # デバイス名は状態表示のすぐ右に置く
+        pill = self.status_pill.frame()
+        label = self.device_label.frame()
+        self.device_label.setFrameOrigin_((pill.origin.x + pill.size.width + 8, label.origin.y))
 
     # ---- 動作確認用 ----
 
