@@ -22,7 +22,7 @@ import rumps.rumps
 from AppKit import (NSApplication, NSApplicationActivationPolicyRegular, NSMenu, NSMenuItem)
 from Foundation import NSObject
 
-from . import devices, login_item, paths, presets
+from . import devices, login_item, paths
 from .config import Config, ConfigError, load_config, save_config
 from .dsp import TONE_BOTH, TONE_LR, tone_mode
 from .engine import MIC_PERMISSION_MESSAGE, OPEN_HANG_MESSAGE, Engine
@@ -156,7 +156,6 @@ class MixerApp(rumps.App):
                            callback=lambda _: webbrowser.open(BLACKHOLE_URL)),
             None,
             rumps.MenuItem("設定ファイルを開く", callback=self.on_open_config),
-            rumps.MenuItem("プリセットのフォルダを開く", callback=self.on_open_presets),
             rumps.MenuItem("設定を再読み込み", callback=self.on_reload),
             rumps.MenuItem("ログを開く", callback=self.on_open_log),
             self.login_item,
@@ -381,11 +380,6 @@ class MixerApp(rumps.App):
         self._save_if_dirty()
         # テキストエディットで開く
         subprocess.run(["/usr/bin/open", "-t", str(self.config_path)])
-
-    def on_open_presets(self, _) -> None:
-        # いらないプリセットは、このフォルダでファイルを消せば一覧から消える
-        presets.PRESET_DIR.mkdir(parents=True, exist_ok=True)
-        subprocess.run(["/usr/bin/open", str(presets.PRESET_DIR)])
 
     def on_reload(self, _) -> None:
         self.cfg = self._load_config()

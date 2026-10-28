@@ -8,20 +8,21 @@
 from __future__ import annotations
 
 import time
+from pathlib import Path
 
 import objc
 from AppKit import (
-    NSAlert, NSAlertFirstButtonReturn, NSAppearanceNameAqua, NSAppearanceNameDarkAqua, NSApp,
+    NSAlert, NSAppearanceNameAqua, NSAppearanceNameDarkAqua, NSApp,
     NSBackingStoreBuffered,
     NSBezierPath, NSBitmapImageFileTypePNG, NSColor, NSFont, NSFontAttributeName,
-    NSForegroundColorAttributeName, NSLineBreakByClipping, NSMakeRect, NSMutableAttributedString,
-    NSPopUpButton,
+    NSForegroundColorAttributeName, NSLineBreakByClipping, NSMakeRect, NSModalResponseOK,
+    NSMutableAttributedString, NSOpenPanel, NSPopUpButton, NSSavePanel,
     NSRunLoop, NSRunLoopCommonModes, NSSegmentedControl, NSSegmentSwitchTrackingSelectOne,
     NSSlider, NSString, NSTextAlignmentCenter, NSTextAlignmentLeft, NSTextAlignmentRight,
     NSTextField, NSTimer, NSView, NSWindow, NSWindowStyleMaskClosable,
     NSWindowStyleMaskMiniaturizable, NSWindowStyleMaskTitled,
 )
-from Foundation import NSObject
+from Foundation import NSURL, NSObject
 
 from . import presets
 from .config import ConfigError
@@ -50,7 +51,6 @@ TOP_H = 46
 FOOT_H = 52
 INFO_H = 52        # 通話アプリの設定を案内する帯
 PRESET_H = 46      # プリセットの帯
-PRESET_POPUP_W = 260
 LABEL_W = 60
 CH_W = 116
 MASTER_W = 168
@@ -453,91 +453,81 @@ class MixerWindowController(NSObject):
 
     @objc.python_method
     def _build_presets(self, width, height):
-        """プリセットの帯：一覧・Load・Save…"""
+        """プリセットの帯：Load…（開く）・Save…（保存）と、今のプリセットの名前。"""
         y = height - FOOT_H - INFO_H - PRESET_H + (PRESET_H - BTN_H) / 2
         self.root.addSubview_(_label("Preset", NSMakeRect(PAD, y + 5, LABEL_W - 4, 16),
                                      align=NSTextAlignmentLeft))
         x = PAD + LABEL_W
-        self.preset_popup = NSPopUpButton.alloc().initWithFrame_pullsDown_(
-            NSMakeRect(x, y, PRESET_POPUP_W, BTN_H), False)
-        self.root.addSubview_(self.preset_popup)
-        x += PRESET_POPUP_W + 8
-        for title, callback in (("Load", self._on_load_preset), ("Save…", self._on_save_preset)):
+        for title, callback in (("Load…", self._on_load_preset), ("Save…", self._on_save_preset)):
             button = ToggleButton.alloc().initWithFrame_(NSMakeRect(x, y, BTN_W, BTN_H))
             button.title = title
             button.momentary = True
             button.callback = callback
             self.root.addSubview_(button)
-            if title == "Load":
-                self.load_button = button
             x += BTN_W + 8
+        self.preset_label = _label("", NSMakeRect(x + 8, y + 5, 300, 16), secondary=False,
+                                   align=NSTextAlignmentLeft)
+        self.root.addSubview_(self.preset_label)
         self.root.addSubview_(_label("変更は自動で保存されます",
-                                     NSMakeRect(x + 4, y + 5, width - PAD - x - 4, 16),
+                                     NSMakeRect(width - PAD - 170, y + 5, 170, 16),
                                      align=NSTextAlignmentRight))
-        self._refresh_presets()
+        self.preset_dir = None   # 前回保存・読み込みしたフォルダ（次の画面をそこから始める）
 
     @objc.python_method
-    def _refresh_presets(self, select=None):
-        names = presets.list_presets()
-        self.preset_popup.removeAllItems()
-        if names:
-            self.preset_popup.addItemsWithTitles_(names)
-            if select in names:
-                self.preset_popup.selectItemWithTitle_(select)
-        else:
-            self.preset_popup.addItemWithTitle_("（保存したプリセットはありません）")
-        self.preset_popup.setEnabled_(bool(names))
+    def _start_dir(self, panel):
+        """保存・開く画面を、前回のフォルダ（最初は「書類」）から始める。"""
+        folder = self.preset_dir or str(Path.home() / "Documents")
+        panel.setDirectoryURL_(NSURL.fileURLWithPath_(folder))
+
+    @objc.python_method
+    def _show_error(self, title, message):
+        alert = NSAlert.alloc().init()
+        alert.setMessageText_(title)
+        alert.setInformativeText_(message)
+        alert.runModal()
 
     @objc.python_method
     def _on_save_preset(self, _):
-        """名前を聞いてプリセットを保存する。日付と時刻の部分は自動で付き、書き換えられない。"""
-        prefix = presets.timestamp_prefix()
-        accessory = NSView.alloc().initWithFrame_(NSMakeRect(0, 0, 300, 24))
-        accessory.addSubview_(_label(prefix, NSMakeRect(0, 4, 96, 16), size=13, secondary=False,
-                                     align=NSTextAlignmentLeft))
-        field = NSTextField.alloc().initWithFrame_(NSMakeRect(98, 0, 202, 24))
-        field.setPlaceholderString_("名前（なくても可）")
-        accessory.addSubview_(field)
-        alert = NSAlert.alloc().init()
-        alert.setMessageText_("プリセットを保存")
-        alert.setInformativeText_("今のミックス設定を保存します。名前の先頭には日付と時刻が自動で入ります。")
-        alert.addButtonWithTitle_("保存")
-        alert.addButtonWithTitle_("キャンセル")
-        alert.setAccessoryView_(accessory)
-        alert.window().setInitialFirstResponder_(field)
+        """Mac 標準の保存画面で、好きな名前・場所にプリセットを保存する。"""
+        panel = NSSavePanel.savePanel()
+        panel.setTitle_("プリセットを保存")
+        panel.setMessage_("今のミックス設定（Fader・Pan・Mute・Limiter・Link など）を保存します")
+        panel.setNameFieldStringValue_("BH VMIX プリセット")
+        panel.setAllowedFileTypes_([presets.EXTENSION])
+        panel.setCanCreateDirectories_(True)
+        self._start_dir(panel)
         NSApp.activateIgnoringOtherApps_(True)
-        if alert.runModal() != NSAlertFirstButtonReturn:
+        if panel.runModal() != NSModalResponseOK:
             return
-        # 名前を決めた瞬間の時刻で保存する（ダイアログを開いていた間に分が変わっても、表示どおりの日時にする）
-        name = presets.save_preset(self.host.cfg, field.stringValue(), now=self._prefix_time(prefix))
-        self._refresh_presets(select=name)
-
-    @objc.python_method
-    def _prefix_time(self, prefix):
-        """ダイアログに表示した日付と時刻（261027_2259_）を、その時刻の値に戻す。"""
-        return time.mktime(time.strptime(prefix, "%y%m%d_%H%M_"))
+        try:
+            path = presets.save_preset(self.host.cfg, Path(panel.URL().path()))
+        except OSError as e:
+            self._show_error("プリセットを保存できませんでした", str(e))
+            return
+        self.preset_dir = str(path.parent)
+        self.preset_label.setStringValue_(f"保存しました：{path.stem}")
 
     @objc.python_method
     def _on_load_preset(self, _):
-        if not presets.list_presets():
-            return
-        name = self.preset_popup.titleOfSelectedItem()
-        alert = NSAlert.alloc().init()
-        alert.setMessageText_(f"「{name}」を読み込みますか？")
-        alert.setInformativeText_("今の設定は上書きされます。残しておきたい場合は、先に Save… で保存してください。")
-        alert.addButtonWithTitle_("読み込む")
-        alert.addButtonWithTitle_("キャンセル")
+        """Mac 標準の「開く」画面で、プリセットのファイルを選んで読み込む。"""
+        panel = NSOpenPanel.openPanel()
+        panel.setTitle_("プリセットを開く")
+        panel.setMessage_("読み込むと、今のミックス設定は上書きされます")
+        panel.setAllowedFileTypes_([presets.EXTENSION])
+        panel.setCanChooseFiles_(True)
+        panel.setCanChooseDirectories_(False)
+        panel.setAllowsMultipleSelection_(False)
+        self._start_dir(panel)
         NSApp.activateIgnoringOtherApps_(True)
-        if alert.runModal() != NSAlertFirstButtonReturn:
+        if panel.runModal() != NSModalResponseOK:
             return
+        path = Path(panel.URL().path())
         try:
-            preset = presets.load_preset(name)
+            preset = presets.load_preset(path)
         except ConfigError as e:
-            error = NSAlert.alloc().init()
-            error.setMessageText_("プリセットを読み込めませんでした")
-            error.setInformativeText_(str(e))
-            error.runModal()
+            self._show_error("プリセットを読み込めませんでした", str(e))
             return
+        self.preset_dir = str(path.parent)
         count_changed = presets.apply_preset(self.host.cfg, preset)
         self.host.settings_changed()
         if count_changed:
@@ -545,6 +535,7 @@ class MixerWindowController(NSObject):
             self.host.rebuild_window()
         else:
             self._build_strips()
+            self.preset_label.setStringValue_(f"読み込みました：{path.stem}")
 
     @objc.python_method
     def _build_info(self, width, height):
@@ -554,17 +545,25 @@ class MixerWindowController(NSObject):
         self.root.addSubview_(card)
         cfg = self.host.cfg
         y = top + 8 + (INFO_H - 14 - 20) / 2
-        self.root.addSubview_(_label("通話アプリ（Zoom・Discord）の設定", NSMakeRect(PAD + 14, y + 2, 210, 16),
+        self.root.addSubview_(_label("通話アプリ（Zoom・Discord 等）の設定", NSMakeRect(PAD + 14, y + 2, 232, 16),
                                      size=12, bold=True, secondary=False, align=NSTextAlignmentLeft))
         self.info_devices = []
-        x = PAD + 232
+        x = PAD + 252
+
+        def text_width(text, font):
+            return NSString.stringWithString_(text).sizeWithAttributes_({NSFontAttributeName: font}).width
+
         for role, device in (("マイク（IN）", cfg.sink_device), ("スピーカー（OUT）", cfg.source_device)):
-            self.root.addSubview_(_label(role, NSMakeRect(x, y + 3, 104, 16), align=NSTextAlignmentLeft))
-            name = _label(device, NSMakeRect(x + 104, y, 120, 20), size=15, bold=True,
+            # 文字の幅を測って、役割 → 機材名 → 次の役割 と詰めて並べる
+            role_w = text_width(role, NSFont.systemFontOfSize_(11)) + 4
+            self.root.addSubview_(_label(role, NSMakeRect(x, y + 3, role_w, 16), align=NSTextAlignmentLeft))
+            x += role_w + 6
+            name_w = text_width(device, NSFont.boldSystemFontOfSize_(15)) + 4
+            name = _label(device, NSMakeRect(x, y, name_w, 20), size=15, bold=True,
                           secondary=False, align=NSTextAlignmentLeft)
             self.root.addSubview_(name)
             self.info_devices.append(name)
-            x += 232
+            x += name_w + 36
 
     @objc.python_method
     def _build_footer(self, width, height):
