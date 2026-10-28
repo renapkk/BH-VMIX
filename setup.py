@@ -12,8 +12,8 @@ OPTIONS = {
         "CFBundleName": "BH VMIX",
         "CFBundleDisplayName": "BH VMIX",
         "CFBundleIdentifier": "com.koichi.sslmixer",
-        "CFBundleShortVersionString": "0.3.0",
-        "CFBundleVersion": "0.3.0",
+        "CFBundleShortVersionString": "0.4.0",
+        "CFBundleVersion": "0.4.0",
         # Dock と ⌘Tab に出る、ふつうのアプリにする（メニューバーのアイコンも出る）
         "LSUIElement": False,
         # 同じアプリを二重に起動しない

@@ -12,7 +12,7 @@ import sounddevice as sd
 from . import devices
 from .config import Config, InputConfig
 from .devices import DeviceError, Routing
-from .dsp import Mixer, build_mix_matrix
+from .dsp import TONE_BOTH, TONE_LR, Mixer, build_mix_matrix, tone_mode
 
 # ストリーム監視の間隔（秒）
 POLL_SEC = 0.5
@@ -174,7 +174,8 @@ class Engine:
             stream.start()
             self.state = "動作中"
             self.source_missing = False
-            mode = "テストトーン" if self.test_tone else cfg.output_mode
+            mode = {None: cfg.output_mode, TONE_BOTH: "テストトーン",
+                    TONE_LR: "L/R テスト"}[tone_mode(self.test_tone)]
             self._last_message = ""
             self.log(
                 f"開始: 「{routing.device_name}」 {int(samplerate)} Hz / バッファサイズ {cfg.blocksize} / "

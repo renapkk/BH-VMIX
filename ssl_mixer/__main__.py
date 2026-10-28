@@ -18,6 +18,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--list", action="store_true", help="オーディオデバイスと ch 数を一覧表示して終了")
     parser.add_argument("--config", type=Path, help="設定ファイル（省略時はプロジェクト直下の config.toml）")
     parser.add_argument("--test-tone", action="store_true", help="入力の代わりに 1kHz サイン波を出力する")
+    parser.add_argument("--test-tone-lr", action="store_true",
+                        help="1kHz サイン波を左だけ → 右だけ と交互に出力する（ステレオの確認用）")
     parser.add_argument("--meter", action="store_true", help="ピークメーターを表示する")
     args = parser.parse_args(argv)
 
@@ -41,7 +43,8 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     console = Console()
-    engine = Engine(cfg, test_tone=args.test_tone, log=console.log)
+    tone = "lr" if args.test_tone_lr else args.test_tone
+    engine = Engine(cfg, test_tone=tone, log=console.log)
     # launchd などから SIGTERM（終了の合図）が来たら止める
     signal.signal(signal.SIGTERM, lambda *_: engine.stop())
     if args.meter:

@@ -25,7 +25,7 @@ from Foundation import NSObject
 
 from . import presets
 from .config import ConfigError
-from .dsp import TEST_TONE_DB, lin_to_db
+from .dsp import TEST_TONE_DB, TONE_BOTH, TONE_LR, lin_to_db
 
 # ---- 色（深い赤をアクセントカラーにする） ----
 
@@ -321,7 +321,7 @@ class MixerWindowController(NSObject):
 
     host に必要なもの:
       cfg, engine, test_tone,
-      settings_changed()（すぐ反映して保存）, restart_engine(), set_test_tone(bool),
+      settings_changed()（すぐ反映して保存）, restart_engine(), set_test_tone(None / "both" / "lr"),
       create_aggregate()
     """
 
@@ -506,15 +506,19 @@ class MixerWindowController(NSObject):
         self.root.addSubview_(_label("通話アプリの設定", NSMakeRect(PAD, y, 100, 16),
                                      align=NSTextAlignmentLeft))
         text = f"IN（マイク）= {cfg.sink_device}　　OUT（スピーカー）= {cfg.source_device}"
-        self.root.addSubview_(_label(text, NSMakeRect(PAD + 104, y, width - PAD * 2 - 104, 16),
+        self.root.addSubview_(_label(text, NSMakeRect(PAD + 104, y, 400, 16),
                                      size=12, bold=True, secondary=False, align=NSTextAlignmentLeft))
+        self.root.addSubview_(_label("設定は自動で保存されます",
+                                     NSMakeRect(width - PAD - 180, y, 180, 16),
+                                     align=NSTextAlignmentRight))
 
     @objc.python_method
     def _build_footer(self, width, height):
         y = height - FOOT_H + (FOOT_H - FOOT_BTN_H) / 2
         buttons = [("機器セットを作成", True, lambda _: self.host.create_aggregate()),
                    ("Link In 1-2", False, self._on_link),
-                   (f"Test Tone  {TEST_TONE_DB:g} dBFS", False, self._on_test_tone)]
+                   (f"Test Tone  {TEST_TONE_DB:g} dBFS", False, self._on_test_tone),
+                   ("L/R Test", False, self._on_lr_test)]
         x = PAD
         self.footer_buttons = []
         for title, momentary, callback in buttons:
@@ -528,11 +532,9 @@ class MixerWindowController(NSObject):
             x += FOOT_BTN_W + 8
         self.link_button = self.footer_buttons[1]
         self.tone_button = self.footer_buttons[2]
+        self.lr_button = self.footer_buttons[3]
         if len(self.host.cfg.inputs) < 2:
             self.link_button.setHidden_(True)
-        self.root.addSubview_(_label("設定は自動で保存されます",
-                                     NSMakeRect(width - PAD - 180, y + 6, 180, 16),
-                                     align=NSTextAlignmentRight))
 
     @objc.python_method
     def _row_tops(self):
@@ -717,7 +719,8 @@ class MixerWindowController(NSObject):
         self.mode_control.setSelectedSegment_(0 if cfg.output_mode == "stereo" else 1)
         self.buffer_popup.selectItemWithTitle_(str(cfg.blocksize))
         self.link_button.setOn_(cfg.is_linked)
-        self.tone_button.setOn_(self.host.test_tone)
+        self.tone_button.setOn_(self.host.test_tone == TONE_BOTH)
+        self.lr_button.setOn_(self.host.test_tone == TONE_LR)
 
     # ---- 画面 → 設定 ----
 
@@ -810,7 +813,11 @@ class MixerWindowController(NSObject):
 
     @objc.python_method
     def _on_test_tone(self, on):
-        self.host.set_test_tone(on)
+        self.host.set_test_tone(TONE_BOTH if on else None)
+
+    @objc.python_method
+    def _on_lr_test(self, on):
+        self.host.set_test_tone(TONE_LR if on else None)
 
     # ---- 表示の更新（1秒に30回） ----
 
@@ -881,7 +888,7 @@ class MixerWindowController(NSObject):
         engine = self.host.engine
         state = engine.state if engine is not None else "停止"
         if state == "動作中" and self.host.test_tone:
-            state = "Test Tone"
+            state = "L/R Test" if self.host.test_tone == TONE_LR else "Test Tone"
         missing = getattr(self.host, "source_missing", False)
         if missing:
             state = f"{self.host.cfg.source_device} なし"
@@ -889,7 +896,7 @@ class MixerWindowController(NSObject):
         routing = engine.routing if engine is not None and state != "接続待ち" else None
         if missing:
             self.device_label.setStringValue_(
-                "USB・電源を確認してください")
+                "USB・電源を確認")
         elif routing is not None:
             self.device_label.setStringValue_(
                 f"{routing.device_name} · {routing.samplerate / 1000:g} kHz")

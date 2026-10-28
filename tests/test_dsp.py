@@ -164,6 +164,47 @@ class ToneTest(unittest.TestCase):
         np.testing.assert_allclose(np.concatenate([a, b]), expected, atol=1e-5)
 
 
+class LRToneTest(unittest.TestCase):
+    def _render(self, seconds, blocksize=256, sr=48000):
+        tone = ToneGenerator(blocksize, sr, alternate=True)
+        blocks = []
+        for _ in range(int(seconds * sr / blocksize)):
+            mix = np.empty((blocksize, 2), dtype=np.float32)
+            tone.generate_stereo(mix)
+            blocks.append(mix)
+        return np.concatenate(blocks), sr
+
+    def test_left_then_right(self):
+        x, sr = self._render(4.0)
+        level = db_to_lin(-12.0)
+
+        def peak(start, end, ch):
+            return float(np.abs(x[int(start * sr):int(end * sr), ch]).max())
+        # 0.1〜0.8秒：左だけ / 1.1〜1.8秒：右だけ / 0.92〜0.98秒：どちらも無音
+        self.assertAlmostEqual(peak(0.1, 0.8, 0), level, places=2)
+        self.assertEqual(peak(0.1, 0.8, 1), 0.0)
+        self.assertAlmostEqual(peak(1.1, 1.8, 1), level, places=2)
+        self.assertEqual(peak(1.1, 1.8, 0), 0.0)
+        self.assertEqual(peak(0.92, 0.98, 0) + peak(0.92, 0.98, 1), 0.0)
+        # 2秒後に同じ並びがくり返される
+        self.assertAlmostEqual(peak(2.1, 2.8, 0), level, places=2)
+        self.assertEqual(peak(2.1, 2.8, 1), 0.0)
+
+    def test_no_clicks(self):
+        x, _ = self._render(2.0)
+        # 出し入れをなめらかにしているので、隣り合うサンプルの差がサイン波の最大の傾きを大きく超えない
+        max_step = db_to_lin(-12.0) * 2 * np.pi * 1000 / 48000
+        self.assertLess(float(np.abs(np.diff(x, axis=0)).max()), max_step * 1.2)
+
+    def test_mixer_modes(self):
+        for mode in (True, "both", "lr", None, False):
+            mixer = Mixer(in_channels=[0], out_channels=[1, 2], matrix=np.zeros((1, 2), np.float32),
+                          blocksize=64, samplerate=48000, limiter=False, test_tone=mode)
+            self.assertEqual(mixer.tone is not None, mode not in (None, False))
+            if mixer.tone is not None:
+                self.assertEqual(mixer.tone.alternate, mode == "lr")
+
+
 class MixerTest(unittest.TestCase):
     def _mixer(self, **kw):
         inputs = [InputConfig(f"In {i}") for i in range(4)]

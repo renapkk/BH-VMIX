@@ -25,5 +25,18 @@ ditto "$APP" "$PACKAGE/BH VMIX.app"
 cp "docs/はじめにお読みください.txt" "$PACKAGE/"
 ditto -c -k --keepParent "$PACKAGE" "dist/BH-VMIX.zip"
 
+# 身内に渡す用：BlackHole のインストーラー（vendor/BlackHole に置いたもの）も入れた zip
+# ライセンス上、この zip は GitHub などの公開の場には置かない
+VENDOR="vendor/BlackHole"
+if [[ -f "$VENDOR/BlackHole2ch-0.7.1.pkg" ]]; then
+  FAMILY="dist/BH VMIX（BlackHole付き）"
+  mkdir -p "$FAMILY"
+  ditto "$APP" "$FAMILY/BH VMIX.app"
+  cp "$VENDOR/BlackHole2ch-0.7.1.pkg" "$VENDOR/BlackHole_LICENSE.txt" "$FAMILY/"
+  cp "docs/はじめにお読みください（BlackHole付き）.txt" "$FAMILY/"
+  ditto -c -k --keepParent "$FAMILY" "dist/BH-VMIX-with-BlackHole.zip"
+  echo "身内用（BlackHole 付き）: dist/BH-VMIX-with-BlackHole.zip"
+fi
+
 echo "できました: $APP"
 echo "配布用: dist/BH-VMIX.zip"

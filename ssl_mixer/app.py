@@ -24,6 +24,7 @@ from Foundation import NSObject
 
 from . import devices, login_item, paths, presets
 from .config import Config, ConfigError, load_config, save_config
+from .dsp import TONE_BOTH, TONE_LR, tone_mode
 from .engine import MIC_PERMISSION_MESSAGE, OPEN_HANG_MESSAGE, Engine
 
 BLACKHOLE_URL = "https://existential.audio/blackhole/"
@@ -112,10 +113,10 @@ def _build_main_menu(target: MenuTarget) -> NSMenu:
 
 
 class MixerApp(rumps.App):
-    def __init__(self, test_tone: bool = False, show_window: bool = True):
+    def __init__(self, test_tone=None, show_window: bool = True):
         super().__init__(paths.APP_NAME, title="VMIX …", quit_button=None)
         self.config_path = paths.ensure_app_config()
-        self.test_tone = test_tone
+        self.test_tone = tone_mode(test_tone)   # None / "both"（両方）/ "lr"（L/R 交互）
         self.engine: Engine | None = None
         self.thread: threading.Thread | None = None
         self.window_ctl = None
@@ -135,6 +136,7 @@ class MixerApp(rumps.App):
         for mode, label in MODE_LABELS.items():
             self.mode_menu.add(rumps.MenuItem(label, callback=self._mode_callback(mode)))
         self.tone_item = rumps.MenuItem("Test Tone（1kHz / -12 dBFS）", callback=self.on_test_tone)
+        self.lr_item = rumps.MenuItem("L/R Test（左右に交互）", callback=self.on_lr_test)
         self.login_item = rumps.MenuItem("ログイン時に起動", callback=self.on_login_item)
         self.menu = [
             rumps.MenuItem("設定ウィンドウを開く", callback=self.on_open_window),
@@ -146,6 +148,7 @@ class MixerApp(rumps.App):
             self.mute_menu,
             self.mode_menu,
             self.tone_item,
+            self.lr_item,
             None,
             rumps.MenuItem("機器セット「SSL12+BH」を作成", callback=self.on_create_aggregate),
             rumps.MenuItem("BlackHole のダウンロードページを開く",
@@ -220,7 +223,8 @@ class MixerApp(rumps.App):
             item.state = cfg.inputs[i].mute
         for mode, label in MODE_LABELS.items():
             self.mode_menu[label].state = cfg.output_mode == mode
-        self.tone_item.state = self.test_tone
+        self.tone_item.state = self.test_tone == TONE_BOTH
+        self.lr_item.state = self.test_tone == TONE_LR
         self.login_item.state = login_item.is_installed()
 
     # ---- エンジンの開始・停止 ----
@@ -245,8 +249,9 @@ class MixerApp(rumps.App):
         self.stop_engine()
         self.start_engine()
 
-    def set_test_tone(self, on: bool) -> None:
-        self.test_tone = on
+    def set_test_tone(self, mode) -> None:
+        """テストトーンを切り替える（None で止める / "both" / "lr"）。"""
+        self.test_tone = tone_mode(mode)
         self._refresh_menu()
         if self.window_ctl is not None:
             self.window_ctl.sync_from_config()
@@ -293,7 +298,9 @@ class MixerApp(rumps.App):
     def on_tick(self, _) -> None:
         state = self.engine.state if self.engine and self.thread and self.thread.is_alive() else "停止"
         self.title = f"VMIX {STATE_MARKS.get(state, '')}"
-        label = "Test Tone" if self.test_tone and state == "動作中" else state
+        label = state
+        if self.test_tone and state == "動作中":
+            label = "L/R Test" if self.test_tone == TONE_LR else "Test Tone"
         self.status_item.title = f"状態: {label}"
         self.message_item.title = _short(self.last_message)
         self._save_if_dirty()
@@ -342,7 +349,10 @@ class MixerApp(rumps.App):
         return callback
 
     def on_test_tone(self, _) -> None:
-        self.set_test_tone(not self.test_tone)
+        self.set_test_tone(None if self.test_tone == TONE_BOTH else TONE_BOTH)
+
+    def on_lr_test(self, _) -> None:
+        self.set_test_tone(None if self.test_tone == TONE_LR else TONE_LR)
 
     def create_aggregate(self) -> None:
         self.on_create_aggregate(None)
@@ -406,6 +416,7 @@ class MixerApp(rumps.App):
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog=paths.APP_NAME)
     parser.add_argument("--test-tone", action="store_true", help="テストトーンで起動する")
+    parser.add_argument("--test-tone-lr", action="store_true", help="L/R 交互のテストトーンで起動する")
     parser.add_argument("--hidden", action="store_true", help="設定ウィンドウを開かずに起動する（ログイン時用）")
     parser.add_argument("--install-login-item", action="store_true", help="ログイン時の起動を登録して終了")
     parser.add_argument("--uninstall-login-item", action="store_true", help="ログイン時の起動を解除して終了")
@@ -427,5 +438,6 @@ def main(argv: list[str] | None = None) -> int:
 
     _setup_logging()
     log.info(f"{paths.APP_NAME} を起動します（設定: {paths.APP_CONFIG_PATH}）")
-    MixerApp(test_tone=args.test_tone, show_window=not args.hidden).run()
+    tone = TONE_LR if args.test_tone_lr else (TONE_BOTH if args.test_tone else None)
+    MixerApp(test_tone=tone, show_window=not args.hidden).run()
     return 0

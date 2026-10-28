@@ -13,3 +13,6 @@ config.toml
 
 # macOS が作るファイル
 .DS_Store
+
+# 身内向け zip に入れる BlackHole のインストーラー（ライセンス上、公開の場には置かない）
+vendor/

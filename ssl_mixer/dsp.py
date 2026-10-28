@@ -18,6 +18,13 @@ LIMITER_CEILING_DB = -1.0
 LIMITER_RELEASE_SEC = 0.1
 TEST_TONE_HZ = 1000.0
 TEST_TONE_DB = -12.0
+# テストトーンの種類：両方から鳴る / 左だけ → 右だけ と交互に鳴る（ステレオで届いているかの確認用）
+TONE_BOTH = "both"
+TONE_LR = "lr"
+# L/R テストの周期：0.0〜0.9秒は左だけ、1.0〜1.9秒は右だけ（間は無音）
+LR_CYCLE_SEC = 2.0
+LR_ON_SEC = 0.9
+LR_FADE_SEC = 0.01   # 切り替えでプチッと鳴らないよう、10ms かけて出し入れする
 # ステレオリンク中にモノで出すとき、L+R を -3dB して合計する
 MONO_SUM_GAIN = 1.0 / math.sqrt(2.0)
 
@@ -198,16 +205,39 @@ class Limiter:
         np.clip(buf, -self.ceiling, self.ceiling, out=buf)
 
 
+def tone_mode(value) -> str | None:
+    """テストトーンの指定をそろえる（False/None → なし、True → 両方、"lr" → L/R 交互）。"""
+    if value in (None, False):
+        return None
+    if value is True:
+        return TONE_BOTH
+    if value not in (TONE_BOTH, TONE_LR):
+        raise ValueError(f"テストトーンの種類が違います: {value!r}")
+    return value
+
+
 class ToneGenerator:
-    """1kHz サイン波（位相がブロック間で途切れないようにする）。"""
+    """1kHz サイン波（位相がブロック間で途切れないようにする）。
+
+    alternate=True なら、左だけ → 右だけ と交互に鳴らす（L/R テスト）。
+    """
 
     def __init__(self, blocksize: int, samplerate: float,
-                 freq: float = TEST_TONE_HZ, level_db: float = TEST_TONE_DB):
+                 freq: float = TEST_TONE_HZ, level_db: float = TEST_TONE_DB,
+                 alternate: bool = False):
         self.amp = db_to_lin(level_db)
         self.step = 2.0 * math.pi * freq / samplerate
         self.phase = 0.0
+        self.samplerate = samplerate
+        self.alternate = alternate
+        self.position = 0                       # L/R 周期の中の位置（サンプル数）
+        self._cycle = int(round(LR_CYCLE_SEC * samplerate))
         self._index = np.arange(blocksize, dtype=np.float64)
         self._work = np.empty(blocksize, dtype=np.float64)
+        self._t = np.empty(blocksize, dtype=np.float64)
+        self._env_l = np.empty(blocksize, dtype=np.float64)
+        self._env_r = np.empty(blocksize, dtype=np.float64)
+        self._tmp = np.empty(blocksize, dtype=np.float64)
 
     def generate(self, out: np.ndarray) -> None:
         """out (frames,) にサイン波を書き込む。"""
@@ -219,6 +249,33 @@ class ToneGenerator:
         work *= self.amp
         out[:] = work
         self.phase = (self.phase + self.step * frames) % (2.0 * math.pi)
+
+    def generate_stereo(self, mix: np.ndarray) -> None:
+        """mix (frames, 2) にテストトーンを書き込む。L/R テストなら左右を交互に鳴らす。"""
+        self.generate(mix[:, 0])
+        if not self.alternate:
+            mix[:, 1] = mix[:, 0]
+            return
+        frames = mix.shape[0]
+        t = self._t[:frames]
+        np.add(self._index[:frames], self.position, out=t)
+        t /= self.samplerate
+        np.mod(t, LR_CYCLE_SEC, out=t)
+        env_l, env_r = self._env_l[:frames], self._env_r[:frames]
+        self._envelope(t, 0.0, LR_ON_SEC, env_l)
+        self._envelope(t, LR_CYCLE_SEC / 2, LR_CYCLE_SEC / 2 + LR_ON_SEC, env_r)
+        np.multiply(mix[:, 0], env_r, out=mix[:, 1], casting="unsafe")
+        np.multiply(mix[:, 0], env_l, out=mix[:, 0], casting="unsafe")
+        self.position = (self.position + frames) % self._cycle
+
+    def _envelope(self, t: np.ndarray, start: float, end: float, out: np.ndarray) -> None:
+        """start〜end の間だけ 1.0（前後 LR_FADE_SEC で出し入れ）、ほかは 0.0 の音量カーブ。"""
+        tmp = self._tmp[:t.shape[0]]
+        np.subtract(t, start, out=out)
+        np.subtract(end, t, out=tmp)
+        np.minimum(out, tmp, out=out)
+        out /= LR_FADE_SEC
+        np.clip(out, 0.0, 1.0, out=out)
 
 
 class Mixer:
@@ -242,7 +299,9 @@ class Mixer:
         self.limiter = Limiter(blocksize, samplerate)
         self.limiter_enabled = limiter
         self.channel_limiter = ChannelLimiter(n_in, blocksize, samplerate)
-        self.tone = ToneGenerator(blocksize, samplerate) if test_tone else None
+        mode = tone_mode(test_tone)
+        self.tone = (ToneGenerator(blocksize, samplerate, alternate=mode == TONE_LR)
+                     if mode is not None else None)
 
         # 作業用バッファ（最初に確保して使い回す）
         self._in_sel = np.empty((blocksize, n_in), dtype=DTYPE)
@@ -290,8 +349,7 @@ class Mixer:
             self.silent_frames = 0
 
         if self.tone is not None:
-            self.tone.generate(mix[:, 0])
-            mix[:, 1] = mix[:, 0]
+            self.tone.generate_stereo(mix)
         else:
             self.channel_limiter.process(in_sel)
             np.matmul(in_sel, self._matrix, out=mix)
