@@ -93,6 +93,9 @@ def _build_main_menu(target: MenuTarget) -> NSMenu:
 
     main = NSMenu.alloc().init()
     app_menu = NSMenu.alloc().initWithTitle_(paths.APP_NAME)
+    # Mac 標準の「について」画面（アイコンとバージョンが出る）
+    app_menu.addItem_(item(f"{paths.APP_NAME} について", "orderFrontStandardAboutPanel:"))
+    app_menu.addItem_(NSMenuItem.separatorItem())
     app_menu.addItem_(item("設定ウィンドウを開く", "openSettings:", ",", target))
     app_menu.addItem_(NSMenuItem.separatorItem())
     app_menu.addItem_(item(f"{paths.APP_NAME} を隠す", "hide:", "h"))

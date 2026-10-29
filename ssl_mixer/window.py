@@ -24,7 +24,7 @@ from AppKit import (
 )
 from Foundation import NSURL, NSObject
 
-from . import presets
+from . import __version__, presets
 from .config import ConfigError
 from .dsp import TEST_TONE_DB, TONE_BOTH, TONE_LR, lin_to_db
 
@@ -588,6 +588,10 @@ class MixerWindowController(NSObject):
         self.lr_button = self.footer_buttons[3]
         if len(self.host.cfg.inputs) < 2:
             self.link_button.setHidden_(True)
+        # 右下にバージョン
+        self.root.addSubview_(_label(f"Version {__version__}",
+                                     NSMakeRect(width - PAD - 100, y + 6, 100, 16),
+                                     align=NSTextAlignmentRight))
 
     @objc.python_method
     def _row_tops(self):

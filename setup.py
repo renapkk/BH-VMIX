@@ -2,6 +2,8 @@
 
 from setuptools import setup
 
+from ssl_mixer import __version__
+
 APP = ["app_main.py"]
 OPTIONS = {
     "argv_emulation": False,
@@ -12,8 +14,8 @@ OPTIONS = {
         "CFBundleName": "BH VMIX",
         "CFBundleDisplayName": "BH VMIX",
         "CFBundleIdentifier": "com.koichi.sslmixer",
-        "CFBundleShortVersionString": "0.4.0",
-        "CFBundleVersion": "0.4.0",
+        "CFBundleShortVersionString": __version__,
+        "CFBundleVersion": __version__,
         # Dock と ⌘Tab に出る、ふつうのアプリにする（メニューバーのアイコンも出る）
         "LSUIElement": False,
         # 同じアプリを二重に起動しない

@@ -7,6 +7,7 @@ import signal
 import sys
 from pathlib import Path
 
+from . import __version__
 from .config import ConfigError, load_config
 
 
@@ -15,6 +16,7 @@ def main(argv: list[str] | None = None) -> int:
         prog="ssl_mixer",
         description="SSL 12 の入力をミックスして BlackHole 2ch へ送る",
     )
+    parser.add_argument("--version", action="version", version=f"BH VMIX {__version__}")
     parser.add_argument("--list", action="store_true", help="オーディオデバイスと ch 数を一覧表示して終了")
     parser.add_argument("--config", type=Path, help="設定ファイル（省略時はプロジェクト直下の config.toml）")
     parser.add_argument("--test-tone", action="store_true", help="入力の代わりに 1kHz サイン波を出力する")
