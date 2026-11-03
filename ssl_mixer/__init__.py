@@ -8,4 +8,4 @@ import os
 os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
 
 # アプリのバージョン（setup.py・設定ウィンドウ・--version がここを読む）
-__version__ = "1.0"
+__version__ = "1.0.1"
