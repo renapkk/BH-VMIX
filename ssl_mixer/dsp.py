@@ -307,6 +307,7 @@ class Mixer:
         self._in_sel = np.empty((blocksize, n_in), dtype=DTYPE)
         self._in_abs = np.empty((blocksize, n_in), dtype=DTYPE)
         self._mix = np.empty((blocksize, 2), dtype=DTYPE)
+        self._mix_part = np.empty((blocksize, 2), dtype=DTYPE)
         self._mix_abs = np.empty((blocksize, 2), dtype=DTYPE)
         self._block_peak_in = np.empty(n_in, dtype=DTYPE)
         self._block_peak_out = np.empty(2, dtype=DTYPE)
@@ -323,6 +324,19 @@ class Mixer:
 
     def set_matrix(self, matrix: np.ndarray) -> None:
         self._matrix = matrix
+
+    def _apply_matrix(self, in_sel: np.ndarray, mix: np.ndarray) -> None:
+        """mix = in_sel × 行列 を、入力 ch ごとの掛け算と足し算で計算する。
+
+        np.matmul は行列計算ライブラリ（BLAS）を使う。古い Mac 向けの numpy の BLAS（OpenBLAS）は、
+        正しい結果でも毎回「divide by zero」などの警告を出し、処理時間もばらつくので、音声処理では使わない。
+        """
+        matrix = self._matrix          # 途中で差し替えられても、この回は同じ行列を使う
+        part = self._mix_part[:len(mix)]
+        np.multiply(in_sel[:, 0:1], matrix[0], out=mix)
+        for i in range(1, matrix.shape[0]):
+            np.multiply(in_sel[:, i:i + 1], matrix[i], out=part)
+            np.add(mix, part, out=mix)
 
     def process(self, indata: np.ndarray, outdata: np.ndarray, frames: int, status) -> None:
         self.callback_count += 1
@@ -352,7 +366,7 @@ class Mixer:
             self.tone.generate_stereo(mix)
         else:
             self.channel_limiter.process(in_sel)
-            np.matmul(in_sel, self._matrix, out=mix)
+            self._apply_matrix(in_sel, mix)
 
         if self.limiter_enabled:
             self.limiter.process(mix)

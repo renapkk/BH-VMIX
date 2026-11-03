@@ -136,5 +136,25 @@ class InputCountTest(unittest.TestCase):
         mixer.process(indata, outdata, 64, None)   # 例外が出なければよい
 
 
+class MixMathTest(unittest.TestCase):
+    def test_mix_matches_matrix_product_without_warnings(self):
+        """音声処理のミックスは行列の積と同じ結果で、警告（OpenBLAS の誤検知など）を出さない。"""
+        import warnings
+        cfg = Config()
+        cfg.inputs[2].pan = -0.4
+        cfg.inputs[3].gain_db = -6.0
+        matrix = build_mix_matrix(cfg.inputs, "stereo", -2.0, linked=True, balance=0.3)
+        mixer = Mixer(in_channels=[0, 1, 2, 3], out_channels=[4, 5], matrix=matrix, blocksize=128,
+                      samplerate=48000, limiter=False, test_tone=False)
+        rng = np.random.default_rng(1)
+        indata = (rng.standard_normal((128, 6)) * 0.3).astype(np.float32)
+        outdata = np.zeros((128, 6), dtype=np.float32)
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            mixer.process(indata, outdata, 128, None)
+        expected = indata[:, :4].astype(np.float64) @ matrix.astype(np.float64)
+        np.testing.assert_allclose(outdata[:, 4:6], expected, atol=1e-6)
+
+
 if __name__ == "__main__":
     unittest.main()

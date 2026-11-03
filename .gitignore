@@ -1,5 +1,6 @@
 # Python の環境とキャッシュ
 .venv/
+.venv-build/
 __pycache__/
 *.pyc
 

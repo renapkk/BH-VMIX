@@ -1,0 +1,8 @@
+# 配布用アプリを作るときのパッケージ（scripts/build_app.sh が .venv-build に自動で入れる）
+# 古い Mac でも動くよう、バージョンを固定する。numpy は macOS 11 向けの版を build_app.sh が先に入れる
+numpy==2.5.4
+sounddevice==0.5.6
+rumps==0.4.0
+py2app==0.28.10
+pyobjc-core==13.0
+pyobjc-framework-Cocoa==13.0

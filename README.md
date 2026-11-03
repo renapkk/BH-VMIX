@@ -138,6 +138,8 @@ BH VMIX が裏で使う「配線」です。通話アプリでは選びません
 
 `dist/BH VMIX.app` と、ほかの Mac に渡すための `dist/BH-VMIX.zip` ができます。
 
+配布用のアプリは、Homebrew の Python ではなく **python.org の Python 3.13**（[macOS 用インストーラー](https://www.python.org/downloads/macos/)）で作ります。Homebrew の Python は今の macOS 専用に作られていて、アプリに入れると古い Mac で起動できないためです。初回は `.venv-build` が自動で作られ、numpy も古い Mac 向けの版が入ります。ビルドの最後に、アプリの中の部品がすべて動作条件（macOS 13 以降）で動くかを確かめ、合わなければ止まります。
+
 `vendor/BlackHole/` に BlackHole の公式インストーラー（`BlackHole2ch-0.7.1.pkg`）とライセンス文（`BlackHole_LICENSE.txt`）を置いておくと、**身内に渡す用の `dist/BH-VMIX-with-BlackHole.zip`** も作られます。BlackHole をダブルクリックで入れられる版です。
 BlackHole の公式インストーラーは再配布の扱いに制限があるので、この zip と `vendor/` は **GitHub などの公開の場には置かないでください**（`vendor/` は Git に入らない設定にしてあります）。
 ログイン時の起動は、ターミナルから `./scripts/install_login_item.sh` ／ `./scripts/uninstall_login_item.sh` でも登録・解除できます。
@@ -391,6 +393,7 @@ setup.py        py2app の設定（.app の作り方）
 scripts/        ビルド・自動起動の登録／解除スクリプト
 tests/          unittest
 requirements.txt     依存パッケージ
+requirements-build.txt  配布用アプリを作るときのパッケージ（バージョン固定）
 config.example.toml  設定ファイルの見本
 ```
 
