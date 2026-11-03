@@ -7,10 +7,11 @@
 from __future__ import annotations
 
 import copy
-import tomllib
+import os
+import tempfile
 from pathlib import Path
 
-from .config import Config, ConfigError, dump_config, parse_config
+from .config import Config, ConfigError, dump_config, parse_config, read_toml
 
 EXTENSION = "bhvmix"
 
@@ -20,20 +21,25 @@ def save_preset(cfg: Config, path: Path) -> Path:
     path = Path(path)
     if path.suffix.lower() != f".{EXTENSION}":
         path = path.with_name(path.name + f".{EXTENSION}")
-    path.write_text(dump_config(cfg), encoding="utf-8")
+    # 書き込み途中で失敗しても元のファイルが壊れないよう、同じフォルダの一時ファイルに書いてから置き換える
+    fd, tmp = tempfile.mkstemp(prefix=".", suffix=".tmp", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(dump_config(cfg))
+        os.replace(tmp, path)
+    except BaseException:
+        Path(tmp).unlink(missing_ok=True)
+        raise
     return path
 
 
 def load_preset(path: Path) -> Config:
     """プリセットのファイルを読み込む。"""
-    path = Path(path)
-    try:
-        with open(path, "rb") as f:
-            return parse_config(tomllib.load(f))
-    except FileNotFoundError:
-        raise ConfigError(f"プリセットが見つかりません: {path.name}") from None
-    except tomllib.TOMLDecodeError as e:
-        raise ConfigError(f"プリセットの書式エラー（{path.name}）: {e}") from None
+    data = read_toml(path, "プリセット")
+    # 空のファイルや別の TOML を読んで、黙って全部が初期化されないようにする
+    if not data.get("inputs"):
+        raise ConfigError(f"BH VMIX のプリセットではありません（[[inputs]] がありません）: {Path(path).name}")
+    return parse_config(data)
 
 
 def apply_preset(cfg: Config, preset: Config) -> bool:

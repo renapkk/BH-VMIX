@@ -23,12 +23,12 @@ from AppKit import (NSApplication, NSApplicationActivationPolicyRegular, NSMenu,
 from Foundation import NSObject
 
 from . import devices, login_item, paths
-from .config import Config, ConfigError, load_config, save_config
+from .config import Config, ConfigError, backup_broken, load_config, save_config
 from .dsp import TONE_BOTH, TONE_LR, tone_mode
 from .engine import MIC_PERMISSION_MESSAGE, OPEN_HANG_MESSAGE, Engine
 
 BLACKHOLE_URL = "https://existential.audio/blackhole/"
-STATE_MARKS = {"動作中": "●", "接続待ち": "…", "起動中": "…", "停止": "○"}
+STATE_MARKS = {"動作中": "●", "接続待ち": "…", "起動中": "…", "停止処理中": "…", "停止": "○"}
 MODE_LABELS = {"stereo": "Stereo", "mono": "Mono"}
 
 log = logging.getLogger("ssl_mixer")
@@ -126,6 +126,9 @@ class MixerApp(rumps.App):
         self.last_message = ""
         self._alerts: list[str] = []   # Engine のスレッドから積み、タイマーで表示する
         self._dirty = False            # 設定ファイルへの保存待ち
+        self._save_failed = False      # 保存に失敗中か（ログを1回だけ出すため）
+        self._stopping_thread: threading.Thread | None = None  # 止めきれていない古いエンジン
+        self._start_pending = False    # 古いエンジンが止まったら開始する
         self._mute_menu_key = None
         self.source_missing = False     # SSL 12 が見つからない状態か（設定ウィンドウの表示にも使う）
         self._source_alerted = False    # 見つからなくなってから、もうアラートを出したか
@@ -187,7 +190,14 @@ class MixerApp(rumps.App):
             cfg, _ = load_config(self.config_path)
             return cfg
         except ConfigError as e:
-            self._notify(f"設定ファイルにエラーがあるため、既定値で動きます。\n{e}")
+            # 既定値のまま自動保存すると元の内容が消えるので、先にコピーを残す
+            try:
+                backup = backup_broken(self.config_path)
+            except OSError as copy_error:
+                backup = None
+                log.warning(f"設定ファイルのコピーを残せませんでした: {copy_error}")
+            kept = f"\n\n元のファイルは次の場所に残しました:\n{backup}" if backup else ""
+            self._notify(f"設定ファイルにエラーがあるため、既定値で動きます。\n{e}{kept}")
             return Config()
 
     def settings_changed(self) -> None:
@@ -201,11 +211,18 @@ class MixerApp(rumps.App):
     def _save_if_dirty(self) -> None:
         if not self._dirty:
             return
-        self._dirty = False
         try:
             save_config(self.cfg, self.config_path)
         except OSError as e:
-            log.info(f"設定を保存できませんでした: {e}")
+            # 保存待ちのまま残し、次の tick（1秒後）にもう一度試す。ログは最初の1回だけ
+            if not self._save_failed:
+                log.warning(f"設定を保存できませんでした（1秒おきに再試行します）: {e}")
+            self._save_failed = True
+            return
+        self._dirty = False
+        if self._save_failed:
+            log.info("設定を保存できました")
+        self._save_failed = False
 
     def _refresh_menu(self) -> None:
         """メニューのチェック状態を設定に合わせる。"""
@@ -235,6 +252,14 @@ class MixerApp(rumps.App):
     def start_engine(self) -> None:
         if self.thread is not None and self.thread.is_alive():
             return
+        if self._stopping_thread is not None:
+            if self._stopping_thread.is_alive():
+                # 古いエンジンがまだ止まりきっていない。二重に動かさず、止まってから開始する（on_tick）
+                self._start_pending = True
+                self.toggle_item.title = "停止"
+                return
+            self._stopping_thread = None
+        self._start_pending = False
         self.engine = Engine(self.cfg, test_tone=self.test_tone, log=self._on_engine_log)
         self.thread = threading.Thread(target=self.engine.run, daemon=True)
         self.thread.start()
@@ -245,7 +270,12 @@ class MixerApp(rumps.App):
             self.engine.stop()
         if self.thread is not None:
             self.thread.join(timeout=5)
+            if self.thread.is_alive():
+                # デバイスを開く途中などで固まっている。止まるまで新しいエンジンは作らない
+                log.warning("エンジンの停止に時間がかかっています。止まりしだい再開します")
+                self._stopping_thread = self.thread
         self.thread = None
+        self._start_pending = False
         self.toggle_item.title = "開始"
 
     def restart_engine(self) -> None:
@@ -299,7 +329,11 @@ class MixerApp(rumps.App):
     # ---- メニューの操作 ----
 
     def on_tick(self, _) -> None:
+        if self._start_pending and not self._stopping_thread.is_alive():
+            self.start_engine()
         state = self.engine.state if self.engine and self.thread and self.thread.is_alive() else "停止"
+        if self._start_pending:
+            state = "停止処理中"
         self._check_source()
         if self.source_missing:
             # インターフェースが外れているときは、メニューバーの印を点滅させて目立たせる
@@ -338,7 +372,10 @@ class MixerApp(rumps.App):
             self._alerts.append(message)
 
     def on_toggle(self, _) -> None:
-        if self.thread is not None and self.thread.is_alive():
+        if self._start_pending:
+            self._start_pending = False
+            self.toggle_item.title = "開始"
+        elif self.thread is not None and self.thread.is_alive():
             self.stop_engine()
         else:
             self.start_engine()

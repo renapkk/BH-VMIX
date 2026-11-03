@@ -6,6 +6,7 @@ import gc
 import sys
 import threading
 import time
+import traceback
 from typing import Callable
 
 import sounddevice as sd
@@ -91,7 +92,12 @@ class Engine:
                                 linked=cfg.is_linked, balance=cfg.link_balance)
 
     def _apply_to(self, mixer: Mixer) -> None:
-        mixer.set_matrix(self._matrix())
+        matrix = self._matrix()
+        if matrix.shape[0] != len(mixer.in_channels):
+            # 入力の数が変わった（プリセットの読み込みなど）。今のストリームには合わないので
+            # 差し替えず、開き直し（restart_engine）を待つ。差し替えると音声処理が例外で止まる
+            return
+        mixer.set_matrix(matrix)
         mixer.channel_limiter.set_settings(self.cfg.inputs, self.cfg.is_linked)
         mixer.limiter_enabled = self.cfg.limiter
 
@@ -114,26 +120,39 @@ class Engine:
         # 間に合うよう、順番を譲り合う間隔を 1ms に縮める
         sys.setswitchinterval(GIL_SWITCH_SEC)
         while not self._stop.is_set():
-            # 起動前に機器セットが作られた場合などに備えて、毎回デバイス一覧を取り直す
-            devices.refresh_portaudio()
             try:
-                routing = devices.resolve_routing(self.cfg)
-            except (DeviceError, sd.PortAudioError) as e:
-                self.source_missing = not self._source_present()
-                self.state = "接続待ち"
-                self._log_once(f"{e}。{self.cfg.reconnect_interval:g}秒おきに再接続を試みます…")
-                self._stop.wait(self.cfg.reconnect_interval)
-                continue
-            try:
-                self._run_stream(routing)
-            except sd.PortAudioError as e:
-                self.log(f"ストリームを開けませんでした: {e}")
-            finally:
+                self._run_once()
+            except Exception:
+                # 想定外のエラーでも黙って止まらないよう、記録して少し待ってからやり直す
                 self.mixer = None
-            if not self._stop.is_set():
-                self.state = "接続待ち"
+                self.state = "エラー"
+                self._log_once("想定外のエラーが起きました。"
+                               f"{self.cfg.reconnect_interval:g}秒後にやり直します。\n"
+                               + traceback.format_exc())
                 self._stop.wait(self.cfg.reconnect_interval)
         self.state = "停止"
+
+    def _run_once(self) -> None:
+        """接続して、切れるか止められるまで動かす（run から繰り返し呼ぶ）。"""
+        # 起動前に機器セットが作られた場合などに備えて、毎回デバイス一覧を取り直す
+        devices.refresh_portaudio()
+        try:
+            routing = devices.resolve_routing(self.cfg)
+        except (DeviceError, sd.PortAudioError) as e:
+            self.source_missing = not self._source_present()
+            self.state = "接続待ち"
+            self._log_once(f"{e}。{self.cfg.reconnect_interval:g}秒おきに再接続を試みます…")
+            self._stop.wait(self.cfg.reconnect_interval)
+            return
+        try:
+            self._run_stream(routing)
+        except sd.PortAudioError as e:
+            self.log(f"ストリームを開けませんでした: {e}")
+        finally:
+            self.mixer = None
+        if not self._stop.is_set():
+            self.state = "接続待ち"
+            self._stop.wait(self.cfg.reconnect_interval)
 
     def _run_stream(self, routing: Routing) -> None:
         cfg = self.cfg

@@ -25,7 +25,7 @@ from AppKit import (
 from Foundation import NSURL, NSObject
 
 from . import __version__, presets
-from .config import ConfigError
+from .config import ConfigError, clean_name
 from .dsp import TEST_TONE_DB, TONE_BOTH, TONE_LR, lin_to_db
 
 # ---- 色（深い赤をアクセントカラーにする） ----
@@ -531,7 +531,8 @@ class MixerWindowController(NSObject):
         count_changed = presets.apply_preset(self.host.cfg, preset)
         self.host.settings_changed()
         if count_changed:
-            # 入力の数が変わったときはウィンドウの大きさも変わるので作り直す
+            # 入力の数が変わったときは、音声の経路を開き直し、ウィンドウの大きさも変わるので作り直す
+            self.host.restart_engine()
             self.host.rebuild_window()
         else:
             self._build_strips()
@@ -704,6 +705,7 @@ class MixerWindowController(NSObject):
         name.setAlignment_(NSTextAlignmentCenter)
         name.setFont_(NSFont.boldSystemFontOfSize_(13))
         name.cell().setLineBreakMode_(NSLineBreakByClipping)
+        name.setUsesSingleLineMode_(True)   # 貼り付けで改行が入らないように
         name.cell().setSendsActionOnEndEditing_(True)
         name.setTag_(i)
         name.setTarget_(self)
@@ -821,7 +823,8 @@ class MixerWindowController(NSObject):
         self._changed()
 
     def nameChanged_(self, sender):
-        text = sender.stringValue().strip()
+        # 改行・制御文字を除き、長さをそろえる（そのまま保存すると次回読めなくなる）
+        text = clean_name(sender.stringValue())
         inp = self.host.cfg.inputs[sender.tag()]
         if text and text != inp.name:
             inp.name = text
@@ -901,10 +904,12 @@ class MixerWindowController(NSObject):
         mixer = engine.mixer if engine is not None else None
         n_in = len(self.host.cfg.inputs)
         if mixer is not None:
-            peaks = list(mixer.peak_in) + list(mixer.peak_out)
+            # 入力の数を変えた直後は、動いている音声処理と画面の入力数が一時的に合わないので、そろえて読む
+            pad = [0.0] * n_in
+            peaks = (list(mixer.peak_in) + pad)[:n_in] + list(mixer.peak_out)
             mixer.peak_in.fill(0.0)
             mixer.peak_out.fill(0.0)
-            ch_gr = [lin_to_db(float(g)) for g in mixer.channel_limiter.gain]
+            ch_gr = ([lin_to_db(float(g)) for g in mixer.channel_limiter.gain] + pad)[:n_in]
             master_gr = lin_to_db(float(mixer.limiter.gain)) if mixer.limiter_enabled else 0.0
         else:
             peaks = [0.0] * (n_in + 2)
@@ -960,6 +965,8 @@ class MixerWindowController(NSObject):
             detail = f"{routing.device_name} · {routing.samplerate / 1000:g} kHz" if routing else ""
         elif state == "接続待ち":
             text, kind, detail = "● 接続待ち", "wait", self.host.cfg.device
+        elif state == "エラー":
+            text, kind, detail = "● エラー", "alert", "メニューの「ログ」を確認"
         else:
             text, kind, detail = f"● {state}", "idle", ""
         self.status_pill.setText_kind_(text, kind)
